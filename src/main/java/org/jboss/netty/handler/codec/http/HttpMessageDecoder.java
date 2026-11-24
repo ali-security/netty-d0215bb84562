@@ -553,14 +553,28 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<HttpMessageDec
         }
 
         if (isContentAlwaysEmpty(message)) {
-            nextState = State.SKIP_CONTROL_CHARS;
-        } else if (message.isChunked()) {
-            // HttpMessage.isChunked() returns true when either:
-            // 1) HttpMessage.setChunked(true) was called or
-            // 2) 'Transfer-Encoding' is 'chunked'.
-            // Because this decoder did not call HttpMessage.setChunked(true)
-            // yet, HttpMessage.isChunked() should return true only when
-            // 'Transfer-Encoding' is 'chunked'.
+            return State.SKIP_CONTROL_CHARS;
+        }
+
+        List<String> transferEncodingFields = message.getHeaders(HttpHeaders.Names.TRANSFER_ENCODING);
+        boolean hasTransferEncoding = !transferEncodingFields.isEmpty();
+        // Because this decoder did not call HttpMessage.setChunked(true) yet, the message is
+        // chunked only when a 'chunked' transfer coding is present in the 'Transfer-Encoding' header.
+        boolean isTransferEncodingChunked = containsChunkedTransferCoding(transferEncodingFields);
+        // Unlike responses, requests without a final chunked coding cannot use connection close for framing.
+        // See https://datatracker.ietf.org/doc/html/rfc9112#section-6.3-4
+        if (hasTransferEncoding && !isTransferEncodingChunked && isDecodingRequest()) {
+            throw new IllegalArgumentException("The final transfer coding must be chunked for HTTP requests");
+        }
+        if (isTransferEncodingChunked) {
+            // The "chunked must be the last encoding" rule (RFC 9112 6.1) is not specific to
+            // HTTP/1.1 -- it applies to any message that carries a Transfer-Encoding header at
+            // all, so this validation must not be gated on the protocol version.
+            // See https://datatracker.ietf.org/doc/html/rfc9112#name-message-body-length
+            if (!isLastTransferEncodingChunked(transferEncodingFields)) {
+                throw new IllegalArgumentException(
+                        "chunked must be the last encoding present in the Transfer-Encoding header");
+            }
             nextState = State.READ_CHUNK_SIZE;
             if (!contentLengthHeaders.isEmpty() && HttpVersion.HTTP_1_1.equals(message.getProtocolVersion())) {
                 handleTransferEncodingChunkedWithContentLength(message);
@@ -571,6 +585,69 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<HttpMessageDec
             nextState = State.READ_VARIABLE_LENGTH_CONTENT;
         }
         return nextState;
+    }
+
+    private static boolean containsChunkedTransferCoding(List<String> transferEncodingFields) {
+        int chunkedLength = HttpHeaders.Values.CHUNKED.length();
+        for (int i = 0; i < transferEncodingFields.size(); ++i) {
+            String value = transferEncodingFields.get(i);
+            int start = 0;
+            while (start <= value.length()) {
+                int comma = value.indexOf(',', start);
+                int end = comma == -1 ? value.length() : comma;
+                while (start < end && (value.charAt(start) == ' ' || value.charAt(start) == '\t')) {
+                    ++start;
+                }
+                while (end > start && (value.charAt(end - 1) == ' ' || value.charAt(end - 1) == '\t')) {
+                    --end;
+                }
+                if (end - start == chunkedLength &&
+                        HttpHeaders.Values.CHUNKED.regionMatches(true, 0, value, start, chunkedLength)) {
+                    return true;
+                }
+                if (comma == -1) {
+                    break;
+                }
+                start = comma + 1;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isLastTransferEncodingChunked(List<String> transferEncodingFields) {
+        boolean chunkedSeen = false;
+        boolean lastChunked = false;
+        int chunkedLength = HttpHeaders.Values.CHUNKED.length();
+        for (int i = 0; i < transferEncodingFields.size(); ++i) {
+            String value = transferEncodingFields.get(i);
+            int start = 0;
+            while (start <= value.length()) {
+                int comma = value.indexOf(',', start);
+                int end = comma == -1 ? value.length() : comma;
+                while (start < end && (value.charAt(start) == ' ' || value.charAt(start) == '\t')) {
+                    ++start;
+                }
+                while (end > start && (value.charAt(end - 1) == ' ' || value.charAt(end - 1) == '\t')) {
+                    --end;
+                }
+                if (start < end) {
+                    lastChunked = end - start == chunkedLength &&
+                            HttpHeaders.Values.CHUNKED.regionMatches(true, 0, value, start, chunkedLength);
+                    if (lastChunked) {
+                        if (chunkedSeen) {
+                            throw new IllegalArgumentException(
+                                    "chunked transfer coding must not be applied more than once");
+                        }
+                        chunkedSeen = true;
+                    }
+                }
+                if (comma == -1) {
+                    break;
+                }
+                start = comma + 1;
+            }
+        }
+        return lastChunked;
     }
 
     /**
