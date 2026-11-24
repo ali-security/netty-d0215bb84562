@@ -109,6 +109,11 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<HttpMessageDec
     private long chunkSize;
     private int headerSize;
     private int contentRead;
+    // Number of leading control/whitespace characters skipped while looking for the next
+    // initial line. Tracked across decode invocations to enforce the maxInitialLineLength
+    // budget and prevent a DoS where an unbounded run of control characters keeps the
+    // decoder busy forever. See https://github.com/netty/netty/issues/10111 (sonatype-2020-0103).
+    private int skippedControlChars;
 
     /**
      * The internal state of {@link HttpMessageDecoder}.
@@ -190,14 +195,17 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<HttpMessageDec
             }
         }
         case READ_INITIAL: {
-            String[] initialLine = splitInitialLine(readLine(buffer, maxInitialLineLength));
+            String[] initialLine = splitInitialLine(
+                    readLine(buffer, maxInitialLineLength, skippedControlChars));
             if (initialLine.length < 3) {
                 // Invalid initial line - ignore.
+                skippedControlChars = 0;
                 checkpoint(State.SKIP_CONTROL_CHARS);
                 return null;
             }
 
             message = createMessage(initialLine);
+            skippedControlChars = 0;
             checkpoint(State.READ_HEADER);
         }
         case READ_HEADER: {
@@ -450,17 +458,25 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<HttpMessageDec
         }
         this.message = null;
 
+        skippedControlChars = 0;
         checkpoint(State.SKIP_CONTROL_CHARS);
         return message;
     }
 
-    private static void skipControlCharacters(ChannelBuffer buffer) {
+    private void skipControlCharacters(ChannelBuffer buffer) throws TooLongFrameException {
         for (;;) {
             char c = (char) buffer.readUnsignedByte();
             if (!Character.isISOControl(c) &&
                 !Character.isWhitespace(c)) {
                 buffer.readerIndex(buffer.readerIndex() - 1);
                 break;
+            }
+            // Count the skipped char against the initial line budget so that an
+            // unbounded run of control characters cannot keep the decoder busy
+            // forever. See https://github.com/netty/netty/issues/10111.
+            if (++skippedControlChars > maxInitialLineLength) {
+                throw new TooLongFrameException(
+                        "An HTTP line is larger than " + maxInitialLineLength + " bytes.");
             }
         }
     }
@@ -647,8 +663,20 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<HttpMessageDec
     }
 
     private static String readLine(ChannelBuffer buffer, int maxLineLength) throws TooLongFrameException {
+        return readLine(buffer, maxLineLength, 0);
+    }
+
+    /**
+     * Reads a single CRLF/LF-terminated line, enforcing that the total number of consumed bytes
+     * (including the {@code initialLength} already accounted for by the caller) does not exceed
+     * {@code maxLineLength}. The {@code initialLength} hook lets the initial-line decoder share the
+     * {@code maxInitialLineLength} budget with any leading control characters skipped by
+     * {@link #skipControlCharacters(ChannelBuffer)} (see https://github.com/netty/netty/issues/10111).
+     */
+    private static String readLine(ChannelBuffer buffer, int maxLineLength, int initialLength)
+            throws TooLongFrameException {
         StringBuilder sb = new StringBuilder(64);
-        int lineLength = 0;
+        int lineLength = initialLength;
         while (true) {
             byte nextByte = buffer.readByte();
             if (nextByte == HttpConstants.CR) {
