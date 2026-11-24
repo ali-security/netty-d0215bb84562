@@ -41,6 +41,11 @@ import java.util.TreeMap;
  * This decoder will decode Body and can handle POST BODY.
  */
 public class HttpPostRequestDecoder {
+
+    static final int DEFAULT_MAX_FIELDS = 1024;
+
+    static final int DEFAULT_MAX_BUFFERED_BYTES = 1048576;
+
     /**
      * Factory used to create InterfaceHttpData
      */
@@ -55,6 +60,16 @@ public class HttpPostRequestDecoder {
      * Default charset to use
      */
     private final Charset charset;
+
+    /**
+     * The maximum number of fields allowed by the form
+     */
+    private final int maxFields;
+
+    /**
+     * The maximum number of accumulated bytes when decoding a field
+     */
+    private final int maxBufferedBytes;
 
     /**
      * Does request have a body to decode
@@ -138,6 +153,22 @@ public class HttpPostRequestDecoder {
 
     /**
      *
+     * @param request the request to decode
+     * @param maxFields the maximum number of fields the form can have, {@code -1} to disable
+     * @param maxBufferedBytes the maximum number of bytes the decoder can buffer when decoding a field,
+     *            {@code -1} to disable
+     * @throws NullPointerException for request
+     * @throws IncompatibleDataDecoderException if the request has no body to decode
+     * @throws ErrorDataDecoderException if the default charset was wrong when decoding or other errors
+     */
+    public HttpPostRequestDecoder(HttpRequest request, int maxFields, int maxBufferedBytes)
+            throws ErrorDataDecoderException, IncompatibleDataDecoderException {
+        this(new DefaultHttpDataFactory(DefaultHttpDataFactory.MINSIZE), request, HttpConstants.DEFAULT_CHARSET,
+             maxFields, maxBufferedBytes);
+    }
+
+    /**
+     *
      * @param factory the factory used to create InterfaceHttpData
      * @param request the request to decode
      * @throws NullPointerException for request or factory
@@ -161,6 +192,24 @@ public class HttpPostRequestDecoder {
     public HttpPostRequestDecoder(HttpDataFactory factory, HttpRequest request,
             Charset charset) throws ErrorDataDecoderException,
             IncompatibleDataDecoderException {
+        this(factory, request, charset, DEFAULT_MAX_FIELDS, DEFAULT_MAX_BUFFERED_BYTES);
+    }
+
+    /**
+     *
+     * @param factory the factory used to create InterfaceHttpData
+     * @param request the request to decode
+     * @param charset the charset to use as default
+     * @param maxFields the maximum number of fields the form can have, {@code -1} to disable
+     * @param maxBufferedBytes the maximum number of bytes the decoder can buffer when decoding a field,
+     *            {@code -1} to disable
+     * @throws NullPointerException for request or charset or factory
+     * @throws IncompatibleDataDecoderException if the request has no body to decode
+     * @throws ErrorDataDecoderException if the default charset was wrong when decoding or other errors
+     */
+    public HttpPostRequestDecoder(HttpDataFactory factory, HttpRequest request,
+            Charset charset, int maxFields, int maxBufferedBytes) throws ErrorDataDecoderException,
+            IncompatibleDataDecoderException {
         if (factory == null) {
             throw new NullPointerException("factory");
         }
@@ -177,6 +226,8 @@ public class HttpPostRequestDecoder {
         }
         this.charset = charset;
         this.factory = factory;
+        this.maxFields = maxFields;
+        this.maxBufferedBytes = maxBufferedBytes;
         // Fill default values
         if (this.request.containsHeader(HttpHeaders.Names.CONTENT_TYPE)) {
             checkMultipart(this.request.getHeader(HttpHeaders.Names.CONTENT_TYPE));
@@ -190,6 +241,10 @@ public class HttpPostRequestDecoder {
             undecodedChunk = this.request.getContent();
             isLastChunk = true;
             parseBody();
+            if (maxBufferedBytes > 0 && undecodedChunk != null
+                    && undecodedChunk.readableBytes() > maxBufferedBytes) {
+                throw new TooLongFormFieldException();
+            }
         }
     }
 
@@ -353,6 +408,9 @@ public class HttpPostRequestDecoder {
             isLastChunk = true;
         }
         parseBody();
+        if (maxBufferedBytes > 0 && undecodedChunk != null && undecodedChunk.readableBytes() > maxBufferedBytes) {
+            throw new TooLongFormFieldException();
+        }
     }
 
     /**
@@ -410,9 +468,12 @@ public class HttpPostRequestDecoder {
     /**
      * Utility function to add a new decoded data
      */
-    private void addHttpData(InterfaceHttpData data) {
+    private void addHttpData(InterfaceHttpData data) throws ErrorDataDecoderException {
         if (data == null) {
             return;
+        }
+        if (maxFields > 0 && bodyListHttpData.size() >= maxFields) {
+            throw new TooManyFormFieldsException();
         }
         List<InterfaceHttpData> datas = bodyMapHttpData.get(data.getName());
         if (datas == null) {
@@ -2102,5 +2163,19 @@ public class HttpPostRequestDecoder {
         public IncompatibleDataDecoderException(String msg, Throwable cause) {
             super(msg, cause);
         }
+    }
+
+    /**
+     * Exception when the maximum number of fields for a given form is reached
+     */
+    public static final class TooManyFormFieldsException extends ErrorDataDecoderException {
+        private static final long serialVersionUID = 1336267941020800769L;
+    }
+
+    /**
+     * Exception when a field content is too long
+     */
+    public static final class TooLongFormFieldException extends ErrorDataDecoderException {
+        private static final long serialVersionUID = 1336267941020800770L;
     }
 }
