@@ -24,6 +24,7 @@ import org.jboss.netty.channel.MessageEvent;
 import org.jboss.netty.channel.SimpleChannelDownstreamHandler;
 import org.jboss.netty.handler.codec.embedder.EncoderEmbedder;
 import org.jboss.netty.util.CharsetUtil;
+import org.jboss.netty.util.internal.PlatformDependent;
 import org.junit.Test;
 
 import java.io.ByteArrayInputStream;
@@ -46,7 +47,7 @@ public class ChunkedWriteHandlerTest {
 
         FileOutputStream out = null;
         try {
-            TMP = File.createTempFile("netty-chunk-", ".tmp");
+            TMP = PlatformDependent.createTempFile("netty-chunk-", ".tmp", null);
             TMP.deleteOnExit();
             out = new FileOutputStream(TMP);
             out.write(BYTES);
