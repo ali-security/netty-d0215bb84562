@@ -103,6 +103,7 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<HttpMessageDec
     private final int maxInitialLineLength;
     private final int maxHeaderSize;
     private final int maxChunkSize;
+    private final boolean allowDuplicateContentLengths;
     private HttpMessage message;
     private ChannelBuffer content;
     private long chunkSize;
@@ -135,7 +136,7 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<HttpMessageDec
      * {@code maxChunkSize (8192)}.
      */
     protected HttpMessageDecoder() {
-        this(4096, 8192, 8192);
+        this(4096, 8192, 8192, false);
     }
 
     /**
@@ -143,6 +144,15 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<HttpMessageDec
      */
     protected HttpMessageDecoder(
             int maxInitialLineLength, int maxHeaderSize, int maxChunkSize) {
+        this(maxInitialLineLength, maxHeaderSize, maxChunkSize, false);
+    }
+
+    /**
+     * Creates a new instance with the specified parameters.
+     */
+    protected HttpMessageDecoder(
+            int maxInitialLineLength, int maxHeaderSize, int maxChunkSize,
+            boolean allowDuplicateContentLengths) {
 
         super(State.SKIP_CONTROL_CHARS, true);
 
@@ -164,6 +174,7 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<HttpMessageDec
         this.maxInitialLineLength = maxInitialLineLength;
         this.maxHeaderSize = maxHeaderSize;
         this.maxChunkSize = maxChunkSize;
+        this.allowDuplicateContentLengths = allowDuplicateContentLengths;
     }
 
     @Override
@@ -510,6 +521,20 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<HttpMessageDec
         }
 
         State nextState;
+
+        List<String> contentLengthHeaders = message.getHeaders(HttpHeaders.Names.CONTENT_LENGTH);
+        if (!contentLengthHeaders.isEmpty()) {
+            HttpVersion version = message.getProtocolVersion();
+            boolean isHttp10OrEarlier = version.getMajorVersion() < 1 || (version.getMajorVersion() == 1
+                    && version.getMinorVersion() == 0);
+            // Guard against multiple Content-Length headers as stated in
+            // https://tools.ietf.org/html/rfc7230#section-3.3.2:
+            long contentLength = HttpCodecUtil.normalizeAndGetContentLength(contentLengthHeaders,
+                    isHttp10OrEarlier, allowDuplicateContentLengths);
+            if (contentLength != -1) {
+                message.setHeader(HttpHeaders.Names.CONTENT_LENGTH, contentLength);
+            }
+        }
 
         if (isContentAlwaysEmpty(message)) {
             nextState = State.SKIP_CONTROL_CHARS;

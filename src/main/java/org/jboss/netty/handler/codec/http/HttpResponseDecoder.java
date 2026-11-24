@@ -99,6 +99,18 @@ public class HttpResponseDecoder extends HttpMessageDecoder {
         super(maxInitialLineLength, maxHeaderSize, maxChunkSize);
     }
 
+    /**
+     * Creates a new instance with the specified parameters.
+     *
+     * @param allowDuplicateContentLengths {@code true} if multiple, identical-value
+     *        {@code Content-Length} headers should be accepted and normalized to a single value.
+     */
+    public HttpResponseDecoder(
+            int maxInitialLineLength, int maxHeaderSize, int maxChunkSize,
+            boolean allowDuplicateContentLengths) {
+        super(maxInitialLineLength, maxHeaderSize, maxChunkSize, allowDuplicateContentLengths);
+    }
+
     @Override
     protected HttpMessage createMessage(String[] initialLine) {
         return new DefaultHttpResponse(
