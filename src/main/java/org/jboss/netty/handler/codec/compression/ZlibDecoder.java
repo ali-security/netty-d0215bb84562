@@ -36,23 +36,64 @@ public class ZlibDecoder extends OneToOneDecoder {
     private volatile boolean finished;
 
     /**
-     * Creates a new instance with the default wrapper ({@link ZlibWrapper#ZLIB}).
+     * Maximum allowed size of the cumulative decompression buffer, in bytes.
+     * {@code 0} means "no limit" which preserves the original behaviour. A positive
+     * value caps how much a single decompressed stream may expand to, protecting
+     * against decompression-bomb DoS attacks. See CVE-2020-11612 / sonatype-2020-0029
+     * (https://github.com/netty/netty/pull/9924).
+     */
+    private final int maxAllocation;
+
+    /**
+     * Creates a new instance with the default wrapper ({@link ZlibWrapper#ZLIB})
+     * and no decompression-buffer limit.
      *
      * @throws CompressionException if failed to initialize zlib
      */
     public ZlibDecoder() {
-        this(ZlibWrapper.ZLIB);
+        this(ZlibWrapper.ZLIB, 0);
     }
 
     /**
-     * Creates a new instance with the specified wrapper.
+     * Creates a new instance with the default wrapper ({@link ZlibWrapper#ZLIB})
+     * and the specified maximum decompression-buffer size.
+     *
+     * @param maxAllocation
+     *          Maximum size of the decompression buffer. Must be &gt;= 0.
+     *          If zero, no limit is enforced.
+     *
+     * @throws CompressionException if failed to initialize zlib
+     */
+    public ZlibDecoder(int maxAllocation) {
+        this(ZlibWrapper.ZLIB, maxAllocation);
+    }
+
+    /**
+     * Creates a new instance with the specified wrapper and no decompression-buffer limit.
      *
      * @throws CompressionException if failed to initialize zlib
      */
     public ZlibDecoder(ZlibWrapper wrapper) {
+        this(wrapper, 0);
+    }
+
+    /**
+     * Creates a new instance with the specified wrapper and maximum decompression-buffer size.
+     *
+     * @param maxAllocation
+     *          Maximum size of the decompression buffer. Must be &gt;= 0.
+     *          If zero, no limit is enforced.
+     *
+     * @throws CompressionException if failed to initialize zlib
+     */
+    public ZlibDecoder(ZlibWrapper wrapper, int maxAllocation) {
         if (wrapper == null) {
             throw new NullPointerException("wrapper");
         }
+        if (maxAllocation < 0) {
+            throw new IllegalArgumentException("maxAllocation must be >= 0");
+        }
+        this.maxAllocation = maxAllocation;
 
         synchronized (z) {
             int resultCode = z.inflateInit(ZlibUtil.convertWrapperType(wrapper));
@@ -63,16 +104,35 @@ public class ZlibDecoder extends OneToOneDecoder {
     }
 
     /**
-     * Creates a new instance with the specified preset dictionary. The wrapper
-     * is always {@link ZlibWrapper#ZLIB} because it is the only format that
-     * supports the preset dictionary.
+     * Creates a new instance with the specified preset dictionary and no
+     * decompression-buffer limit. The wrapper is always {@link ZlibWrapper#ZLIB}
+     * because it is the only format that supports the preset dictionary.
      *
      * @throws CompressionException if failed to initialize zlib
      */
     public ZlibDecoder(byte[] dictionary) {
+        this(dictionary, 0);
+    }
+
+    /**
+     * Creates a new instance with the specified preset dictionary and maximum
+     * decompression-buffer size. The wrapper is always {@link ZlibWrapper#ZLIB}
+     * because it is the only format that supports the preset dictionary.
+     *
+     * @param maxAllocation
+     *          Maximum size of the decompression buffer. Must be &gt;= 0.
+     *          If zero, no limit is enforced.
+     *
+     * @throws CompressionException if failed to initialize zlib
+     */
+    public ZlibDecoder(byte[] dictionary, int maxAllocation) {
         if (dictionary == null) {
             throw new NullPointerException("dictionary");
         }
+        if (maxAllocation < 0) {
+            throw new IllegalArgumentException("maxAllocation must be >= 0");
+        }
+        this.maxAllocation = maxAllocation;
         this.dictionary = dictionary;
 
         synchronized (z) {
@@ -121,6 +181,16 @@ public class ZlibDecoder extends OneToOneDecoder {
                     // Decompress 'in' into 'out'
                     int resultCode = z.inflate(JZlib.Z_SYNC_FLUSH);
                     if (z.next_out_index > 0) {
+                        // Enforce the maximum decompression-buffer size so a small compressed
+                        // payload cannot be inflated into an out-of-memory condition.
+                        // See CVE-2020-11612 / sonatype-2020-0029.
+                        if (maxAllocation != 0 &&
+                            decompressed.writerIndex() + z.next_out_index > maxAllocation) {
+                            finished = true; // Do not decode anymore.
+                            z.inflateEnd();
+                            throw new CompressionException(
+                                    "Decompression buffer has reached maximum size: " + maxAllocation);
+                        }
                         decompressed.writeBytes(out, 0, z.next_out_index);
                         z.avail_out = out.length;
                     }
