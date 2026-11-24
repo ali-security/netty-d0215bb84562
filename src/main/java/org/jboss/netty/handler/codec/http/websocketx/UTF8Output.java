@@ -39,6 +39,13 @@ package org.jboss.netty.handler.codec.http.websocketx;
  * Checks UTF8 bytes for validity before converting it into a string
  */
 final class UTF8Output {
+
+    /**
+     * Hard limit on the cumulative number of payload bytes that may be aggregated into
+     * a single fragmented text message.
+    */
+    static final int MAX_AGGREGATED_TEXT_BYTES = 1048576;
+
     private static final int UTF8_ACCEPT = 0;
     private static final int UTF8_REJECT = 12;
 
@@ -66,12 +73,19 @@ final class UTF8Output {
 
     private final StringBuilder stringBuilder;
 
+    private long aggregatedByteCount;
+
     UTF8Output(byte[] bytes) {
         stringBuilder = new StringBuilder(bytes.length);
         write(bytes);
     }
 
     public void write(byte[] bytes) {
+        if (aggregatedByteCount + bytes.length > MAX_AGGREGATED_TEXT_BYTES) {
+            throw new IllegalStateException(
+                    "Aggregated text exceeded maximum allowed size of 1MB");
+        }
+        aggregatedByteCount += bytes.length;
         for (byte b : bytes) {
             write(b);
         }

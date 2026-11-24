@@ -325,7 +325,7 @@ public class WebSocket08FrameDecoder extends ReplayingDecoder<WebSocket08FrameDe
                     // Check text for UTF8 correctness
                     if (frameOpcode == OPCODE_TEXT || fragmentedFramesText != null) {
                         // Check UTF-8 correctness for this payload
-                        checkUTF8String(channel, framePayload.array());
+                        checkUTF8String(channel, toByteArray(framePayload));
 
                         // This does a second check to make sure UTF-8
                         // correctness for entire text message
@@ -341,12 +341,12 @@ public class WebSocket08FrameDecoder extends ReplayingDecoder<WebSocket08FrameDe
                     // First text or binary frame for a fragmented set
                     fragmentedFramesText = null;
                     if (frameOpcode == OPCODE_TEXT) {
-                        checkUTF8String(channel, framePayload.array());
+                        checkUTF8String(channel, toByteArray(framePayload));
                     }
                 } else {
                     // Subsequent frames - only check if init frame is text
                     if (fragmentedFramesText != null) {
-                        checkUTF8String(channel, framePayload.array());
+                        checkUTF8String(channel, toByteArray(framePayload));
                     }
                 }
 
@@ -375,9 +375,10 @@ public class WebSocket08FrameDecoder extends ReplayingDecoder<WebSocket08FrameDe
     }
 
     private void unmask(ChannelBuffer frame) {
-        byte[] bytes = frame.array();
-        for (int i = 0; i < bytes.length; i++) {
-            frame.setByte(i, frame.getByte(i) ^ maskingKey.getByte(i % 4));
+        // Iterate via ChannelBuffer accessors instead of ChannelBuffer#array() so direct
+        // (non-heap) buffers are handled safely.
+        for (int i = frame.readerIndex(); i < frame.writerIndex(); i++) {
+            frame.setByte(i, frame.getByte(i) ^ maskingKey.getByte((i - frame.readerIndex()) % 4));
         }
     }
 
@@ -397,6 +398,12 @@ public class WebSocket08FrameDecoder extends ReplayingDecoder<WebSocket08FrameDe
         }
     }
 
+    private static byte[] toByteArray(ChannelBuffer buffer) {
+        byte[] bytes = new byte[buffer.readableBytes()];
+        buffer.getBytes(buffer.readerIndex(), bytes);
+        return bytes;
+    }
+
     private void checkUTF8String(Channel channel, byte[] bytes) throws CorruptedFrameException {
         try {
             // StringBuilder sb = new StringBuilder("UTF8 " + bytes.length +
@@ -413,6 +420,8 @@ public class WebSocket08FrameDecoder extends ReplayingDecoder<WebSocket08FrameDe
             }
         } catch (UTF8Exception ex) {
             protocolViolation(channel, "invalid UTF-8 bytes");
+        } catch (IllegalStateException ex) {
+            protocolViolation(channel, ex.getMessage());
         }
     }
 
