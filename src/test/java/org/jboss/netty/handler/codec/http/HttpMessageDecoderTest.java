@@ -356,6 +356,27 @@ public class HttpMessageDecoderTest {
         testInvalidHeaders0(new HttpResponseDecoder(), responseBuffer);
     }
 
+    @Test
+    public void testWhitespaceInRequestHeaderName() {
+        testInvalidHeaders0("GET /some/path HTTP/1.1\r\n" +
+                "Transfer-Encoding : chunked\r\n" +
+                "Host: netty.io\r\n\r\n");
+    }
+
+    @Test
+    public void testWhitespaceInResponseHeaderName() {
+        String responseStr = "HTTP/1.1 200 OK\r\n" +
+                "Transfer-Encoding : chunked\r\n" +
+                "Host: netty.io\r\n\r\n";
+        DecoderEmbedder<Object> embedder = new DecoderEmbedder<Object>(new HttpResponseDecoder());
+        embedder.offer(ChannelBuffers.copiedBuffer(responseStr, CharsetUtil.US_ASCII));
+        Object msg = embedder.poll();
+        assertTrue(msg instanceof HttpResponse);
+        HttpResponse response = (HttpResponse) msg;
+        assertEquals(HttpHeaders.Values.CHUNKED, response.getHeader(HttpHeaders.Names.TRANSFER_ENCODING));
+        assertEquals("netty.io", response.getHeader(HttpHeaders.Names.HOST));
+    }
+
     private static void testInvalidHeaders0(String requestStr) {
         testInvalidHeaders0(new HttpRequestDecoder(), requestStr);
     }
