@@ -1,0 +1,41 @@
+name: seal-build
+
+# Build-and-pack only: the test suite runs on Travis (.travis.yml).
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      # setup-java can no longer resolve Zulu 7, so fetch it from the Azul CDN
+      # (the public jar was built with JDK 1.7.0_25) and give it the runner's
+      # JDK 8 cacerts, since Zulu 7's are too old for Maven Central.
+      # JDK 8 only donates its (JKS-format) cacerts to Zulu 7.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+      - name: Install Zulu 7 and Maven 3.8.8
+        run: |
+          mkdir -p /tmp/seal-jdk
+          curl -fsSL https://cdn.azul.com/zulu/bin/zulu7.56.0.11-ca-jdk7.0.352-linux_x64.tar.gz | tar xz --strip-components=1 -C /tmp/seal-jdk
+          cp "$JAVA_HOME/jre/lib/security/cacerts" /tmp/seal-jdk/jre/lib/security/cacerts
+          echo JAVA_HOME=/tmp/seal-jdk >> "$GITHUB_ENV"
+          echo /tmp/seal-jdk/bin >> "$GITHUB_PATH"
+          curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.8.8/binaries/apache-maven-3.8.8-bin.tar.gz | tar xz -C /tmp
+          echo /tmp/apache-maven-3.8.8/bin >> "$GITHUB_PATH"
+      - name: Build jar
+        env:
+          MAVEN_OPTS: -Dhttps.protocols=TLSv1.2
+        # buildNumber pins Version.ID to the upstream release commit (5b2cb54)
+        # instead of the fork commit's hash that the antrun write-version task
+        # would otherwise read from git.
+        run: mvn -B -V -e clean package -DskipTests -DbuildNumber=5b2cb54 -Dcheckstyle.skip=true -Danimal.sniffer.skip=true -Dmaven.javadoc.skip=true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netty-jar
+          path: target/netty-3.7.0.Final.jar
+          if-no-files-found: error

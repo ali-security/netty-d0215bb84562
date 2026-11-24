@@ -1,0 +1,6 @@
+# Appended over the JDK's java.security via -Djava.security.properties.
+# The netty 3.7 SSL echo tests use the securechat example keystore, whose
+# certificate carries a 512-bit RSA key. JDK 7u352 rejects RSA < 1024 bits
+# (and other legacy algorithms) that JDK 1.7.0_25, the release JDK, accepted.
+jdk.certpath.disabledAlgorithms=MD2
+jdk.tls.disabledAlgorithms=SSLv3, RC4, NULL
