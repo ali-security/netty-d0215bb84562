@@ -120,6 +120,89 @@ public class HttpMessageDecoderTest {
     }
 
     @Test
+    public void testMultipleContentLengthHeaders() {
+        String requestStr = "GET /some/path HTTP/1.1\r\n" +
+                "Content-Length: 1\r\n" +
+                "Content-Length: 0\r\n\r\n" +
+                "b";
+        testInvalidHeaders0(requestStr);
+    }
+
+    @Test
+    public void testMultipleContentLengthHeaders2() {
+        String requestStr = "GET /some/path HTTP/1.1\r\n" +
+                "Content-Length: 1\r\n" +
+                "Connection: close\r\n" +
+                "Content-Length: 0\r\n\r\n" +
+                "b";
+        testInvalidHeaders0(requestStr);
+    }
+
+    @Test
+    public void testContentLengthHeaderWithCommaValue() {
+        String requestStr = "GET /some/path HTTP/1.1\r\n" +
+                "Content-Length: 1,1\r\n\r\n" +
+                "b";
+        testInvalidHeaders0(requestStr);
+    }
+
+    @Test
+    public void testMultipleContentLengthHeadersWithFolding() {
+        String requestStr = "POST / HTTP/1.1\r\n" +
+                "Host: example.com\r\n" +
+                "Connection: close\r\n" +
+                "Content-Length: 5\r\n" +
+                "Content-Length:\r\n" +
+                "\t6\r\n\r\n" +
+                "123456";
+        testInvalidHeaders0(requestStr);
+    }
+
+    @Test
+    public void testContentLengthHeaderAndChunked() {
+        String requestStr = "POST / HTTP/1.1\r\n" +
+                "Host: example.com\r\n" +
+                "Connection: close\r\n" +
+                "Content-Length: 5\r\n" +
+                "Transfer-Encoding: chunked\r\n\r\n" +
+                "0\r\n\r\n";
+
+        DecoderEmbedder<Object> embedder = new DecoderEmbedder<Object>(new HttpRequestDecoder());
+        assertTrue(embedder.offer(ChannelBuffers.copiedBuffer(requestStr, CharsetUtil.US_ASCII)));
+        HttpRequest request = (HttpRequest) embedder.poll();
+        assertNotNull(request);
+        assertTrue(request.isChunked());
+        assertTrue(HttpHeaders.Values.CHUNKED.equalsIgnoreCase(
+                request.getHeader(HttpHeaders.Names.TRANSFER_ENCODING)));
+        assertFalse(request.containsHeader(HttpHeaders.Names.CONTENT_LENGTH));
+        HttpChunk chunk = (HttpChunk) embedder.poll();
+        assertNotNull(chunk);
+        assertTrue(chunk.isLast());
+        assertFalse(embedder.finish());
+    }
+
+    @Test
+    public void testResponseContentLengthHeaderAndChunked() {
+        String responseStr = "HTTP/1.1 200 OK\r\n" +
+                "Content-Length: 5\r\n" +
+                "Transfer-Encoding: chunked\r\n\r\n" +
+                "0\r\n\r\n";
+
+        DecoderEmbedder<Object> embedder = new DecoderEmbedder<Object>(new HttpResponseDecoder());
+        assertTrue(embedder.offer(ChannelBuffers.copiedBuffer(responseStr, CharsetUtil.US_ASCII)));
+        HttpResponse response = (HttpResponse) embedder.poll();
+        assertNotNull(response);
+        assertTrue(response.isChunked());
+        assertTrue(HttpHeaders.Values.CHUNKED.equalsIgnoreCase(
+                response.getHeader(HttpHeaders.Names.TRANSFER_ENCODING)));
+        assertFalse(response.containsHeader(HttpHeaders.Names.CONTENT_LENGTH));
+        HttpChunk chunk = (HttpChunk) embedder.poll();
+        assertNotNull(chunk);
+        assertTrue(chunk.isLast());
+        assertFalse(embedder.finish());
+    }
+
+    @Test
     public void testResponseContentLengthHeaderWithPositiveSign() {
         String responseStr = "HTTP/1.1 200 OK\r\n" +
                 "Content-Length: +1\r\n\r\n" +
