@@ -15,6 +15,7 @@
  */
 package org.jboss.netty.handler.codec.http;
 
+import org.jboss.netty.buffer.ChannelBuffer;
 import org.jboss.netty.buffer.ChannelBuffers;
 import org.jboss.netty.handler.codec.embedder.CodecEmbedderException;
 import org.jboss.netty.handler.codec.embedder.DecoderEmbedder;
@@ -213,14 +214,160 @@ public class HttpMessageDecoderTest {
         assertNull(embedder.poll());
     }
 
+    // ---------------------------------------------------------------------
+    // GHSA-wx5j-54mm-rqqq: header names must be bracketed by OWS only.
+    // The decoder used to silently strip every Character.isWhitespace char,
+    // which let an attacker smuggle control characters around a header name.
+    // The strict OWS check now rejects 0x0c (FF) and 0x1c-0x1f (FS/GS/RS/US)
+    // both before the name and between the name and the colon.
+    // ---------------------------------------------------------------------
+
+    @Test
+    public void testRequestHeaderNameStartsWithControlChar1c() {
+        testRequestHeaderNameStartsWithControlChar(0x1c);
+    }
+
+    @Test
+    public void testRequestHeaderNameStartsWithControlChar1d() {
+        testRequestHeaderNameStartsWithControlChar(0x1d);
+    }
+
+    @Test
+    public void testRequestHeaderNameStartsWithControlChar1e() {
+        testRequestHeaderNameStartsWithControlChar(0x1e);
+    }
+
+    @Test
+    public void testRequestHeaderNameStartsWithControlChar1f() {
+        testRequestHeaderNameStartsWithControlChar(0x1f);
+    }
+
+    @Test
+    public void testRequestHeaderNameStartsWithControlChar0c() {
+        testRequestHeaderNameStartsWithControlChar(0x0c);
+    }
+
+    private static void testRequestHeaderNameStartsWithControlChar(int controlChar) {
+        ChannelBuffer requestBuffer = ChannelBuffers.dynamicBuffer();
+        requestBuffer.writeBytes("GET /some/path HTTP/1.1\r\nHost: netty.io\r\n".getBytes(CharsetUtil.US_ASCII));
+        requestBuffer.writeByte(controlChar);
+        requestBuffer.writeBytes("Transfer-Encoding: chunked\r\n\r\n".getBytes(CharsetUtil.US_ASCII));
+        testInvalidHeaders0(new HttpRequestDecoder(), requestBuffer);
+    }
+
+    @Test
+    public void testRequestHeaderNameEndsWithControlChar1c() {
+        testRequestHeaderNameEndsWithControlChar(0x1c);
+    }
+
+    @Test
+    public void testRequestHeaderNameEndsWithControlChar1d() {
+        testRequestHeaderNameEndsWithControlChar(0x1d);
+    }
+
+    @Test
+    public void testRequestHeaderNameEndsWithControlChar1e() {
+        testRequestHeaderNameEndsWithControlChar(0x1e);
+    }
+
+    @Test
+    public void testRequestHeaderNameEndsWithControlChar1f() {
+        testRequestHeaderNameEndsWithControlChar(0x1f);
+    }
+
+    @Test
+    public void testRequestHeaderNameEndsWithControlChar0c() {
+        testRequestHeaderNameEndsWithControlChar(0x0c);
+    }
+
+    private static void testRequestHeaderNameEndsWithControlChar(int controlChar) {
+        ChannelBuffer requestBuffer = ChannelBuffers.dynamicBuffer();
+        requestBuffer.writeBytes("GET /some/path HTTP/1.1\r\nHost: netty.io\r\n".getBytes(CharsetUtil.US_ASCII));
+        requestBuffer.writeBytes("Transfer-Encoding".getBytes(CharsetUtil.US_ASCII));
+        requestBuffer.writeByte(controlChar);
+        requestBuffer.writeBytes(": chunked\r\n\r\n".getBytes(CharsetUtil.US_ASCII));
+        testInvalidHeaders0(new HttpRequestDecoder(), requestBuffer);
+    }
+
+    @Test
+    public void testResponseHeaderNameStartsWithControlChar1c() {
+        testResponseHeaderNameStartsWithControlChar(0x1c);
+    }
+
+    @Test
+    public void testResponseHeaderNameStartsWithControlChar1d() {
+        testResponseHeaderNameStartsWithControlChar(0x1d);
+    }
+
+    @Test
+    public void testResponseHeaderNameStartsWithControlChar1e() {
+        testResponseHeaderNameStartsWithControlChar(0x1e);
+    }
+
+    @Test
+    public void testResponseHeaderNameStartsWithControlChar1f() {
+        testResponseHeaderNameStartsWithControlChar(0x1f);
+    }
+
+    @Test
+    public void testResponseHeaderNameStartsWithControlChar0c() {
+        testResponseHeaderNameStartsWithControlChar(0x0c);
+    }
+
+    private static void testResponseHeaderNameStartsWithControlChar(int controlChar) {
+        ChannelBuffer responseBuffer = ChannelBuffers.dynamicBuffer();
+        responseBuffer.writeBytes("HTTP/1.1 200 OK\r\nHost: netty.io\r\n".getBytes(CharsetUtil.US_ASCII));
+        responseBuffer.writeByte(controlChar);
+        responseBuffer.writeBytes("Transfer-Encoding: chunked\r\n\r\n".getBytes(CharsetUtil.US_ASCII));
+        testInvalidHeaders0(new HttpResponseDecoder(), responseBuffer);
+    }
+
+    @Test
+    public void testResponseHeaderNameEndsWithControlChar1c() {
+        testResponseHeaderNameEndsWithControlChar(0x1c);
+    }
+
+    @Test
+    public void testResponseHeaderNameEndsWithControlChar1d() {
+        testResponseHeaderNameEndsWithControlChar(0x1d);
+    }
+
+    @Test
+    public void testResponseHeaderNameEndsWithControlChar1e() {
+        testResponseHeaderNameEndsWithControlChar(0x1e);
+    }
+
+    @Test
+    public void testResponseHeaderNameEndsWithControlChar1f() {
+        testResponseHeaderNameEndsWithControlChar(0x1f);
+    }
+
+    @Test
+    public void testResponseHeaderNameEndsWithControlChar0c() {
+        testResponseHeaderNameEndsWithControlChar(0x0c);
+    }
+
+    private static void testResponseHeaderNameEndsWithControlChar(int controlChar) {
+        ChannelBuffer responseBuffer = ChannelBuffers.dynamicBuffer();
+        responseBuffer.writeBytes("HTTP/1.1 200 OK\r\nHost: netty.io\r\n".getBytes(CharsetUtil.US_ASCII));
+        responseBuffer.writeBytes("Transfer-Encoding".getBytes(CharsetUtil.US_ASCII));
+        responseBuffer.writeByte(controlChar);
+        responseBuffer.writeBytes(": chunked\r\n\r\n".getBytes(CharsetUtil.US_ASCII));
+        testInvalidHeaders0(new HttpResponseDecoder(), responseBuffer);
+    }
+
     private static void testInvalidHeaders0(String requestStr) {
         testInvalidHeaders0(new HttpRequestDecoder(), requestStr);
     }
 
     private static void testInvalidHeaders0(HttpMessageDecoder decoder, String messageStr) {
+        testInvalidHeaders0(decoder, ChannelBuffers.copiedBuffer(messageStr, CharsetUtil.US_ASCII));
+    }
+
+    private static void testInvalidHeaders0(HttpMessageDecoder decoder, ChannelBuffer messageBuffer) {
         DecoderEmbedder<Object> embedder = new DecoderEmbedder<Object>(decoder);
         try {
-            embedder.offer(ChannelBuffers.copiedBuffer(messageStr, CharsetUtil.US_ASCII));
+            embedder.offer(messageBuffer);
             fail("Expected CodecEmbedderException");
         } catch (CodecEmbedderException e) {
             assertTrue(e.getCause() instanceof IllegalArgumentException);
