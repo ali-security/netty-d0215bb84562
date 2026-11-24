@@ -15,6 +15,8 @@
  */
 package org.jboss.netty.handler.codec.http;
 
+import org.jboss.netty.logging.InternalLogger;
+import org.jboss.netty.logging.InternalLoggerFactory;
 import org.jboss.netty.util.internal.StringUtil;
 
 import java.text.ParseException;
@@ -41,27 +43,58 @@ import java.util.TreeSet;
  */
 public class CookieDecoder {
 
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(CookieDecoder.class);
+
     private static final char COMMA = ',';
 
+    private final boolean strict;
+
     /**
-     * Creates a new decoder.
+     * Creates a new decoder with strict validation enabled.
      */
     public CookieDecoder() {
+        this.strict = true;
     }
 
     /**
-     * @deprecated Use {@link #CookieDecoder()} instead.
+     * Creates a new decoder.
+     *
+     * @param strict {@code true} to silently discard cookies whose name or
+     *               value contain characters forbidden by RFC 6265 (the
+     *               default); {@code false} to preserve the legacy lenient
+     *               behaviour.
      */
-    @Deprecated
-    public CookieDecoder(@SuppressWarnings("unused") boolean lenient) {
+    public CookieDecoder(boolean strict) {
+        this.strict = strict;
+    }
+
+    /**
+     * Decodes the specified HTTP header value into {@link Cookie}s, dropping
+     * cookies whose name or value contain characters that are forbidden by
+     * RFC 6265.
+     *
+     * @return the decoded {@link Cookie}s
+     */
+    public Set<Cookie> decode(String header) {
+        return decode(header, this.strict);
     }
 
     /**
      * Decodes the specified HTTP header value into {@link Cookie}s.
      *
+     * <p>When {@code strict} is {@code true} (the default), this method
+     * silently discards any cookie whose name or value contains characters that
+     * are forbidden by RFC 6265 - this is the behaviour added by netty/netty
+     * @d98b21b to prevent attackers from smuggling additional cookies or
+     * cookie attributes (e.g. {@code HttpOnly}) through invalid octets.
+     *
+     * <p>When {@code strict} is {@code false} the legacy lenient behaviour is
+     * preserved for callers that need to interoperate with non-conformant
+     * real-world cookies.
+     *
      * @return the decoded {@link Cookie}s
      */
-    public Set<Cookie> decode(String header) {
+    public Set<Cookie> decode(String header, boolean strict) {
         List<String> names = new ArrayList<String>(8);
         List<String> values = new ArrayList<String>(8);
         extractKeyValuePairs(header, names, values);
@@ -95,11 +128,13 @@ public class CookieDecoder {
         for (; i < names.size(); i ++) {
             String name = names.get(i);
             String value = values.get(i);
-            if (value == null) {
-                value = "";
-            }
 
-            Cookie c = new DefaultCookie(name, value);
+            // Backport of netty/netty@d98b21b: silently discard cookies whose
+            // name or value contain characters that are forbidden by RFC 6265
+            // (only when strict validation is enabled). This prevents an
+            // attacker from smuggling additional cookies or cookie attributes
+            // (e.g. HttpOnly) through invalid octets.
+            Cookie c = initCookie(name, value, strict);
 
             boolean discard = false;
             boolean secure = false;
@@ -157,6 +192,14 @@ public class CookieDecoder {
                 } else {
                     break;
                 }
+            }
+
+            if (c == null) {
+                // Mirror upstream behaviour: stop decoding the rest of the
+                // header as soon as we see an invalid cookie. This prevents
+                // attackers from following an invalid pair with cookies they
+                // would otherwise want the application to consume.
+                break;
             }
 
             c.setVersion(version);
@@ -301,6 +344,71 @@ public class CookieDecoder {
 
             names.add(name);
             values.add(value);
+        }
+    }
+
+    /**
+     * Returns a {@link DefaultCookie} for the given name/value pair, or
+     * {@code null} if the pair must be discarded. Backport of the strict
+     * validation logic introduced by netty/netty@d98b21b.
+     *
+     * <p>When {@code strict} is {@code true}, cookies whose name or value
+     * contain characters forbidden by RFC 6265 are dropped. The
+     * {@link DefaultCookie} constructor itself is also wrapped so that its
+     * pre-existing rejections (empty name, name starting with {@code '$'},
+     * etc.) result in a silent skip rather than an exception bubbling out of
+     * {@link #decode(String)} - this matches upstream's behaviour where
+     * {@code initCookie} returns {@code null} for any unusable input.
+     *
+     * <p>Note: unlike upstream's {@code initCookie} we do <strong>not</strong>
+     * call {@link CookieUtil#unwrapValue(CharSequence)} here. {@link
+     * #extractKeyValuePairs} already strips outer wrapping quotes and
+     * processes backslash escapes when it walks a quoted value, so calling
+     * {@code unwrapValue} a second time would corrupt legitimate values that
+     * happen to start and end with {@code '"'} (for example
+     * {@code c="\"1\"2\""}, which the legacy parser turns into the 5-char
+     * string {@code "1"2"}).
+     */
+    private static Cookie initCookie(String name, String value, boolean strict) {
+        if (name == null || name.length() == 0) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping cookie with null name");
+            }
+            return null;
+        }
+
+        if (value == null) {
+            value = "";
+        }
+
+        int invalidOctetPos;
+        if (strict && (invalidOctetPos = CookieUtil.firstInvalidCookieNameOctet(name)) >= 0) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping cookie because name '" + name +
+                        "' contains invalid char '" + name.charAt(invalidOctetPos) + '\'');
+            }
+            return null;
+        }
+
+        if (strict && (invalidOctetPos = CookieUtil.firstInvalidCookieValueOctet(value)) >= 0) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping cookie because value '" + value +
+                        "' contains invalid char '" + value.charAt(invalidOctetPos) + '\'');
+            }
+            return null;
+        }
+
+        try {
+            return new DefaultCookie(name, value);
+        } catch (IllegalArgumentException e) {
+            // DefaultCookie rejects e.g. names starting with '$' or names that
+            // are empty. Treat this the same as an RFC 6265 violation and
+            // silently drop the cookie instead of letting the exception
+            // propagate to the caller.
+            if (logger.isDebugEnabled()) {
+                logger.debug("Skipping cookie rejected by DefaultCookie: " + e.getMessage());
+            }
+            return null;
         }
     }
 }

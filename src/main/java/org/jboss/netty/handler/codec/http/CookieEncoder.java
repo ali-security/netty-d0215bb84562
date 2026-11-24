@@ -185,6 +185,12 @@ public class CookieEncoder {
         StringBuilder sb = new StringBuilder();
 
         for (Cookie cookie: cookies) {
+            // Backport of netty/netty@d98b21b: reject cookies whose name/value
+            // contain characters that are forbidden by RFC 6265, otherwise an
+            // attacker could smuggle additional attributes (such as HttpOnly)
+            // through the encoded header value.
+            validateCookie(cookie.getName(), cookie.getValue());
+
             if (cookie.getVersion() >= 1) {
                 add(sb, '$' + CookieHeaderNames.VERSION, 1);
             }
@@ -220,6 +226,30 @@ public class CookieEncoder {
             sb.setLength(sb.length() - 2);
         }
         return sb.toString();
+    }
+
+    private static void validateCookie(String name, String value) {
+        if (name != null) {
+            int pos = CookieUtil.firstInvalidCookieNameOctet(name);
+            if (pos >= 0) {
+                throw new IllegalArgumentException(
+                        "Cookie name contains an invalid char: " + name.charAt(pos));
+            }
+        }
+
+        if (value != null) {
+            CharSequence unwrappedValue = CookieUtil.unwrapValue(value);
+            if (unwrappedValue == null) {
+                throw new IllegalArgumentException(
+                        "Cookie value wrapping quotes are not balanced: " + value);
+            }
+
+            int pos = CookieUtil.firstInvalidCookieValueOctet(unwrappedValue);
+            if (pos >= 0) {
+                throw new IllegalArgumentException(
+                        "Cookie value contains an invalid char: " + unwrappedValue.charAt(pos));
+            }
+        }
     }
 
     private static void add(StringBuilder sb, String name, String val) {
